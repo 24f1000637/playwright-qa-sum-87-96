@@ -3,55 +3,34 @@ const { chromium } = require("playwright");
 const seeds = [87, 88, 89, 90, 91, 92, 93, 94, 95, 96];
 const base = "https://sanand0.github.io/tdsdata/js_table/?seed=";
 
-// Extract numbers like 1,234 or -56.78 or 1234.56
 function extractNumbers(text) {
   if (!text) return [];
-  const matches = text.match(/-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?/g);
+  const matches = text.match(/-?\d+(?:\.\d+)?/g);
   if (!matches) return [];
-  return matches.map(m => Number(m.replace(/,/g, ""))).filter(Number.isFinite);
+  return matches.map(Number).filter(Number.isFinite);
 }
 
-// Compute sum of ALL numbers in ALL tables on the page (cells + headers)
-async function computeTableSum(page) {
-  const cellTexts = await page.$$eval("table", (tables) =>
-    tables.flatMap((t) =>
-      Array.from(t.querySelectorAll("th, td")).map((el) => el.innerText || "")
-    )
+async function computePageSum(page) {
+  // Wait for JS to finish rendering
+  await page.waitForSelector("table", { timeout: 30000 });
+  await page.waitForLoadState("networkidle");
+
+  // Only extract from table cells (not headers)
+  const cellTexts = await page.$$eval("table td", cells =>
+    cells.map(c => c.innerText.trim())
   );
 
   let sum = 0;
-  for (const txt of cellTexts) {
-    for (const n of extractNumbers(txt)) sum += n;
+  for (const text of cellTexts) {
+    const nums = text.match(/-?\d+(?:\.\d+)?/g);
+    if (nums) {
+      for (const n of nums) {
+        sum += Number(n);
+      }
+    }
   }
+
   return sum;
-}
-
-// Wait until the table sum is stable for a few consecutive checks
-async function waitForStableSum(page, { intervalMs = 500, stableChecks = 3, timeoutMs = 30000 } = {}) {
-  const start = Date.now();
-  let last = null;
-  let stableCount = 0;
-
-  while (Date.now() - start < timeoutMs) {
-    const current = await computeTableSum(page);
-
-    if (last !== null && current === last) {
-      stableCount += 1;
-    } else {
-      stableCount = 0;
-    }
-
-    last = current;
-
-    if (stableCount >= stableChecks) {
-      return current;
-    }
-
-    await page.waitForTimeout(intervalMs);
-  }
-
-  // If not stable by timeout, return the latest value (better than failing)
-  return last ?? 0;
 }
 
 (async () => {
@@ -64,15 +43,7 @@ async function waitForStableSum(page, { intervalMs = 500, stableChecks = 3, time
     const url = `${base}${seed}`;
     await page.goto(url, { waitUntil: "domcontentloaded" });
 
-    // Wait for at least one table to appear
-    await page.waitForSelector("table", { timeout: 30000 });
-
-    // Wait until sums stop changing (tables fully rendered)
-    const pageSum = await waitForStableSum(page, {
-      intervalMs: 500,
-      stableChecks: 3,
-      timeoutMs: 30000,
-    });
+    const pageSum = await computePageSum(page);
 
     grandTotal += pageSum;
     console.log(`seed=${seed} pageSum=${pageSum}`);
@@ -82,7 +53,4 @@ async function waitForStableSum(page, { intervalMs = 500, stableChecks = 3, time
   console.log(`Sum=${grandTotal}`);
 
   await browser.close();
-})().catch((err) => {
-  console.error("Script failed:", err);
-  process.exit(1);
-});
+})();
